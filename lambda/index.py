@@ -1,4 +1,6 @@
 # lambda/index.py
+import urllib.request
+import urllib.error
 import json
 import os
 import boto3
@@ -82,24 +84,73 @@ def lambda_handler(event, context):
         
         print("Calling Bedrock invoke_model API with payload:", json.dumps(request_payload))
         
-        # invoke_model APIを呼び出し
-        response = bedrock_client.invoke_model(
-            modelId=MODEL_ID,
-            body=json.dumps(request_payload),
-            contentType="application/json"
+        # fastAPIから呼び出すダメにコメントアウト
+        # # invoke_model APIを呼び出し
+        # response = bedrock_client.invoke_model(
+        #     modelId=MODEL_ID,
+        #     body=json.dumps(request_payload),
+        #     contentType="application/json"
+        # )
+        
+        # # レスポンスを解析
+        # response_body = json.loads(response['body'].read())
+
+        # fastAPIから呼び出すコードを追加
+        fastapi_url = os.environ.get("FASTAPI_URL", "https://36c9-34-126-101-172.ngrok-free.app/generate")
+
+        # fastAPI用のペイロードを作る
+        fastapi_request_payload = {
+            "prompt": message,
+            "max_new_tokens": 512,
+            "do_sample": True,
+            "temperature": 0.7,
+            "topP": 0.9
+        }
+
+        # JSON文字列にしてエンコード
+        request_data = json.dumps(fastapi_request_payload).encode('utf-8')
+
+        req = urllib.request.Request(
+            fastapi_url,
+            data=request_data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
         )
-        
-        # レスポンスを解析
-        response_body = json.loads(response['body'].read())
+
+        try:
+            with urllib.request.urlopen(req) as response:
+                response_body = response.read()
+            response_body = json.loads(response_body)
+
+        except urllib.error.HTTPError as e:
+            error_message = e.read().decode()
+            raise Exception(f"HTTPError {e.code}: {error_message}")
+        except urllib.error.URLError as e:
+            raise Exception(f"URLError: {e.reason}")
+
         print("Bedrock response:", json.dumps(response_body, default=str))
+
+        # Bedrock形式か、FastAPI独自形式かを両方受け入れる
+        assistant_response = None
+        if response_body.get('output') and response_body['output'].get('message') and response_body['output']['message'].get('content'):
+            assistant_response = response_body['output']['message']['content'][0]['text']
+        elif response_body.get('result'):
+            assistant_response = response_body['result']
+        elif response_body.get('generated_text'):
+            assistant_response = response_body['generated_text']   # FastAPIのレスポンスを受け取るため追加
+        else:
+            raise Exception("No valid response content from the model or FastAPI")
         
-        # 応答の検証
-        if not response_body.get('output') or not response_body['output'].get('message') or not response_body['output']['message'].get('content'):
-            raise Exception("No response content from the model")
         
-        # アシスタントの応答を取得
-        assistant_response = response_body['output']['message']['content'][0]['text']
+        # fastAPIからの応答に変えたので、応答部分を変更
+        # # 応答の検証
+        # if not response_body.get('output') or not response_body['output'].get('message') or not response_body['output']['message'].get('content'):
+        #     raise Exception("No response content from the model")
         
+        # # アシスタントの応答を取得
+        # assistant_response = response_body['output']['message']['content'][0]['text']
+        
+
         # アシスタントの応答を会話履歴に追加
         messages.append({
             "role": "assistant",
@@ -121,7 +172,7 @@ def lambda_handler(event, context):
                 "conversationHistory": messages
             })
         }
-        
+
     except Exception as error:
         print("Error:", str(error))
         
